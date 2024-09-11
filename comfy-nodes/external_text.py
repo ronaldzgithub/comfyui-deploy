@@ -18,6 +18,14 @@ class ComfyUIDeployExternalText:
                     "STRING",
                     {"multiline": True, "default": ""},
                 ),
+                "display_name": (
+                    "STRING",
+                    {"multiline": False, "default": ""},
+                ),
+                "description": (
+                    "STRING",
+                    {"multiline": True, "default": ""},
+                ),
             }
         }
 
@@ -28,7 +36,7 @@ class ComfyUIDeployExternalText:
 
     CATEGORY = "text"
 
-    def run(self, input_id, default_value=None):
+    def run(self, input_id, default_value=None, display_name=None, description=None):
         return [default_value]
 
 
