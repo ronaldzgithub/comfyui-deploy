@@ -83,10 +83,51 @@ function dispatchAPIEventData(data) {
   }
 }
 
+const context = {
+  selectedWorkflowInfo: null,
+};
+// let selectedWorkflowInfo = {
+//   workflow_id: "05da8f2b-63af-4c0c-86dd-08d01ec512b7",
+//   machine_id: "45ac5f85-b7b6-436f-8d97-2383b25485f3",
+//   native_run_api_endpoint: "http://localhost:3011/api/run",
+// };
+
+async function getSelectedWorkflowInfo() {
+  const workflow_info_promise = new Promise((resolve) => {
+    try {
+      const handleMessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "workflow_info") {
+            resolve(message.data);
+            window.removeEventListener("message", handleMessage);
+          }
+        } catch (error) {
+          console.error(error);
+          resolve(undefined);
+        }
+      };
+      window.addEventListener("message", handleMessage);
+      sendEventToCD("workflow_info");
+    } catch (error) {
+      console.error(error);
+      resolve(undefined);
+    }
+  });
+
+  return workflow_info_promise;
+}
+
+function setSelectedWorkflowInfo(info) {
+  context.selectedWorkflowInfo = info;
+}
+
 /** @typedef {import('../../../web/types/comfy.js').ComfyExtension} ComfyExtension*/
 /** @type {ComfyExtension} */
 const ext = {
   name: "BennyKok.ComfyUIDeploy",
+
+  native_mode: false,
 
   init(app) {
     addButton();
@@ -97,16 +138,17 @@ const ext = {
     const org_display = queryParams.get("org_display");
     const origin = queryParams.get("origin");
     const workspace_mode = queryParams.get("workspace_mode");
+    this.native_mode = queryParams.get("native_mode") === "true";
 
     if (workspace_mode) {
       document.querySelector(".comfy-menu").style.display = "none";
 
       sendEventToCD("cd_plugin_onInit");
 
-      app.queuePrompt = ((originalFunction) => async () => {
-        // const prompt = await app.graphToPrompt();
-        sendEventToCD("cd_plugin_onQueuePromptTrigger");
-      })(app.queuePrompt);
+      // app.queuePrompt = ((originalFunction) => async () => {
+      //   // const prompt = await app.graphToPrompt();
+      //   sendEventToCD("cd_plugin_onQueuePromptTrigger");
+      // })(app.queuePrompt);
 
       // // Intercept the onkeydown event
       // window.addEventListener(
@@ -213,7 +255,7 @@ const ext = {
           (v) => {
             this.properties.workflow_name = v;
           },
-          { multiline: false }
+          { multiline: false },
         );
 
         this.addWidget(
@@ -223,7 +265,7 @@ const ext = {
           (v) => {
             this.properties.workflow_id = v;
           },
-          { multiline: false }
+          { multiline: false },
         );
 
         this.addWidget(
@@ -233,7 +275,7 @@ const ext = {
           (v) => {
             this.properties.version = v;
           },
-          { multiline: false }
+          { multiline: false },
         );
 
         this.widgets_start_y = 10;
@@ -270,11 +312,14 @@ const ext = {
     }
 
     // Register the node type
-    LiteGraph.registerNodeType("ComfyDeploy", Object.assign(ComfyDeploy, {
-      title: "Comfy Deploy",
-      title_mode: LiteGraph.NORMAL_TITLE,
-      collapsable: true,
-    }));
+    LiteGraph.registerNodeType(
+      "ComfyDeploy",
+      Object.assign(ComfyDeploy, {
+        title: "Comfy Deploy",
+        title_mode: LiteGraph.NORMAL_TITLE,
+        collapsable: true,
+      }),
+    );
 
     ComfyDeploy.category = "deploy";
   },
@@ -293,6 +338,17 @@ const ext = {
           // This part of the code would depend on how the ComfyUI expects to receive and process the workflow data
           // For demonstration, let's assume there's a loadWorkflow method in the ComfyUI API
           if (comfyUIWorkflow && app && app.loadGraphData) {
+            try {
+              await window["app"].ui.settings.setSettingValueAsync(
+                "Comfy.Validation.Workflows",
+                false,
+              );
+            } catch (error) {
+              console.warning(
+                "Error setting validation to false, is fine to ignore this",
+                error,
+              );
+            }
             console.log("loadGraphData");
             app.loadGraphData(comfyUIWorkflow);
           }
@@ -380,6 +436,8 @@ const ext = {
           }
 
           animate();
+        } else if (message.type === "workflow_info") {
+          setSelectedWorkflowInfo(message.data);
         }
         // else if (message.type === "refresh") {
         //   sendEventToCD("cd_plugin_onRefresh");
@@ -398,6 +456,25 @@ const ext = {
 
       //   }
     });
+
+    if (this.native_mode) {
+      // console.log("native mode", window, window.app);
+      try {
+        await app.ui.settings.setSettingValueAsync("Comfy.UseNewMenu", "Top");
+        await app.ui.settings.setSettingValueAsync(
+          "Comfy.Sidebar.Size",
+          "small"
+        );
+        await app.ui.settings.setSettingValueAsync(
+          "Comfy.Sidebar.Location",
+          "right"
+        );
+        localStorage.setItem("Comfy.MenuPosition.Docked", "true");
+        console.log("native mode manmanman");
+      } catch (error) {
+        console.error("Error setting validation to false", error);
+      }
+    }
 
     app.graph.onAfterChange = ((originalFunction) =>
       async function () {
@@ -443,10 +520,10 @@ function createDynamicUIHtml(data) {
           <h3 style="font-size: 14px; font-weight: semibold; margin-bottom: 8px;">Missing Nodes</h3>
           <p style="font-size: 12px;">These nodes are not found with any matching custom_nodes in the ComfyUI Manager Database</p>
           ${data.missing_nodes
-        .map((node) => {
-          return `<p style="font-size: 14px; color: #d69e2e;">${node}</p>`;
-        })
-        .join("")}
+            .map((node) => {
+              return `<p style="font-size: 14px; color: #d69e2e;">${node}</p>`;
+            })
+            .join("")}
       </div>
   `;
   }
@@ -454,14 +531,17 @@ function createDynamicUIHtml(data) {
   Object.values(data.custom_nodes).forEach((node) => {
     html += `
           <div style="border-bottom: 1px solid #e2e8f0; padding-top: 16px;">
-              <a href="${node.url
-      }" target="_blank" style="font-size: 18px; font-weight: semibold; color: white; text-decoration: none;">${node.name
-      }</a>
+              <a href="${
+                node.url
+              }" target="_blank" style="font-size: 18px; font-weight: semibold; color: white; text-decoration: none;">${
+                node.name
+              }</a>
               <p style="font-size: 14px; color: #4b5563;">${node.hash}</p>
-              ${node.warning
-        ? `<p style="font-size: 14px; color: #d69e2e;">${node.warning}</p>`
-        : ""
-      }
+              ${
+                node.warning
+                  ? `<p style="font-size: 14px; color: #d69e2e;">${node.warning}</p>`
+                  : ""
+              }
           </div>
       `;
   });
@@ -475,8 +555,9 @@ function createDynamicUIHtml(data) {
   Object.entries(data.models).forEach(([section, items]) => {
     html += `
     <div style="border-bottom: 1px solid #e2e8f0; padding-top: 8px; padding-bottom: 8px;">
-        <h3 style="font-size: 18px; font-weight: semibold; margin-bottom: 8px;">${section.charAt(0).toUpperCase() + section.slice(1)
-      }</h3>`;
+        <h3 style="font-size: 18px; font-weight: semibold; margin-bottom: 8px;">${
+          section.charAt(0).toUpperCase() + section.slice(1)
+        }</h3>`;
     items.forEach((item) => {
       html += `<p style="font-size: 14px; color: ${textColor};">${item.name}</p>`;
     });
@@ -492,8 +573,9 @@ function createDynamicUIHtml(data) {
   Object.entries(data.files).forEach(([section, items]) => {
     html += `
     <div style="border-bottom: 1px solid #e2e8f0; padding-top: 8px; padding-bottom: 8px;">
-        <h3 style="font-size: 18px; font-weight: semibold; margin-bottom: 8px;">${section.charAt(0).toUpperCase() + section.slice(1)
-      }</h3>`;
+        <h3 style="font-size: 18px; font-weight: semibold; margin-bottom: 8px;">${
+          section.charAt(0).toUpperCase() + section.slice(1)
+        }</h3>`;
     items.forEach((item) => {
       html += `<p style="font-size: 14px; color: ${textColor};">${item.name}</p>`;
     });
@@ -1013,12 +1095,14 @@ export class LoadingDialog extends ComfyDialog {
   showLoading(title, message) {
     this.show(`
       <div style="width: 400px; display: flex; gap: 18px; flex-direction: column; overflow: unset">
-        <h3 style="margin: 0px; display: flex; align-items: center; justify-content: center; gap: 12px;">${title} ${this.loadingIcon
-      }</h3>
-          ${message
-        ? `<label style="max-width: 100%; white-space: pre-wrap; word-wrap: break-word;">${message}</label>`
-        : ""
-      }
+        <h3 style="margin: 0px; display: flex; align-items: center; justify-content: center; gap: 12px;">${title} ${
+          this.loadingIcon
+        }</h3>
+          ${
+            message
+              ? `<label style="max-width: 100%; white-space: pre-wrap; word-wrap: break-word;">${message}</label>`
+              : ""
+          }
         </div>
       `);
   }
@@ -1284,17 +1368,21 @@ export class ConfigDialog extends ComfyDialog {
     </label>
       <label style="color: white; width: 100%;">
         Endpoint:
-        <input id="endpoint" style="margin-top: 8px; width: 100%; height:40px; box-sizing: border-box; padding: 0px 6px;" type="text" value="${data.endpoint
-      }">
+        <input id="endpoint" style="margin-top: 8px; width: 100%; height:40px; box-sizing: border-box; padding: 0px 6px;" type="text" value="${
+          data.endpoint
+        }">
       </label>
       <div style="color: white;">
-        API Key: User / Org <button style="font-size: 18px;">${data.displayName ?? ""
-      }</button>
-        <input id="apiKey" style="margin-top: 8px; width: 100%; height:40px; box-sizing: border-box; padding: 0px 6px;" type="password" value="${data.apiKey
-      }">
+        API Key: User / Org <button style="font-size: 18px;">${
+          data.displayName ?? ""
+        }</button>
+        <input id="apiKey" style="margin-top: 8px; width: 100%; height:40px; box-sizing: border-box; padding: 0px 6px;" type="password" value="${
+          data.apiKey
+        }">
         <button id="loginButton" style="margin-top: 8px; width: 100%; height:40px; box-sizing: border-box; padding: 0px 6px;">
-          ${data.apiKey ? "Re-login with ComfyDeploy" : "Login with ComfyDeploy"
-      }
+          ${
+            data.apiKey ? "Re-login with ComfyDeploy" : "Login with ComfyDeploy"
+          }
         </button>
       </div>
       </div>
@@ -1483,3 +1571,38 @@ async function loadWorkflowApi(versionId) {
     // Show an error message to the user
   }
 }
+
+const orginal_fetch_api = api.fetchApi;
+api.fetchApi = async (route, options) => {
+  console.log("Fetch API called with args:", route, options, ext.native_mode);
+
+  if (route.startsWith("/prompt") && ext.native_mode) {
+    const info = await getSelectedWorkflowInfo();
+    console.log("info", info);
+    if (info) {
+      const body = JSON.parse(options.body);
+
+      const data = {
+        client_id: body.client_id,
+        workflow_api_json: body.prompt,
+        workflow: body?.extra_data?.extra_pnginfo?.workflow,
+        is_native_run: true,
+        machine_id: info.machine_id,
+        workflow_id: info.workflow_id,
+        native_run_api_endpoint: info.native_run_api_endpoint,
+        gpu_event_id: info.gpu_event_id,
+      };
+
+      return await fetch("/comfyui-deploy/run", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${info.cd_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(data),
+      });
+    }
+  }
+
+  return await orginal_fetch_api.call(api, route, options);
+};
