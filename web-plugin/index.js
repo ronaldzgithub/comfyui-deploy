@@ -4,6 +4,39 @@ import { ComfyWidgets, LGraphNode } from "./widgets.js";
 import { generateDependencyGraph } from "https://esm.sh/comfyui-json@0.1.25";
 import { ComfyDeploy } from "https://esm.sh/comfydeploy@0.0.19-beta.30";
 
+const styles = `
+.comfydeploy-menu-item {
+    background: linear-gradient(to right, rgba(74, 144, 226, 0.9), rgba(103, 178, 111, 0.9)) !important;
+    color: white !important;
+    position: relative !important;
+    padding-left: 20px !important;
+}
+
+.comfydeploy-menu-item:hover {
+    filter: brightness(1.1) !important;
+    cursor: pointer !important;
+}
+
+.comfydeploy-menu-item::before {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 12px;
+    height: 12px;
+    background-image: url('https://www.comfydeploy.com/icon.svg');
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+}
+`;
+
+// Add stylesheet to document
+const styleSheet = document.createElement("style");
+styleSheet.textContent = styles;
+document.head.appendChild(styleSheet);
+
 const loadingIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="#888888" stroke-linecap="round" stroke-width="2"><path stroke-dasharray="60" stroke-dashoffset="60" stroke-opacity=".3" d="M12 3C16.9706 3 21 7.02944 21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3Z"><animate fill="freeze" attributeName="stroke-dashoffset" dur="1.3s" values="60;0"/></path><path stroke-dasharray="15" stroke-dashoffset="15" d="M12 3C16.9706 3 21 7.02944 21 12"><animate fill="freeze" attributeName="stroke-dashoffset" dur="0.3s" values="15;0"/><animateTransform attributeName="transform" dur="1.5s" repeatCount="indefinite" type="rotate" values="0 12 12;360 12 12"/></path></g></svg>`;
 
 function sendEventToCD(event, data) {
@@ -122,6 +155,146 @@ function setSelectedWorkflowInfo(info) {
   context.selectedWorkflowInfo = info;
 }
 
+const VALID_TYPES = [
+  "STRING",
+  "combo",
+  "number",
+  "toggle",
+  "BOOLEAN",
+  "text",
+  "string",
+];
+
+function hideWidget(node, widget, suffix = "") {
+  if (widget.type?.startsWith(CONVERTED_TYPE)) return;
+  widget.origType = widget.type;
+  widget.origComputeSize = widget.computeSize;
+  widget.origSerializeValue = widget.serializeValue;
+  widget.computeSize = () => [0, -4];
+  widget.type = CONVERTED_TYPE + suffix;
+  widget.serializeValue = () => {
+    if (!node.inputs) {
+      return void 0;
+    }
+    let node_input = node.inputs.find((i) => i.widget?.name === widget.name);
+    if (!node_input || !node_input.link) {
+      return void 0;
+    }
+    return widget.origSerializeValue
+      ? widget.origSerializeValue()
+      : widget.value;
+  };
+  if (widget.linkedWidgets) {
+    for (const w of widget.linkedWidgets) {
+      hideWidget(node, w, ":" + widget.name);
+    }
+  }
+}
+
+function getWidgetType(config) {
+  let type = config[0];
+  if (type instanceof Array) {
+    type = "COMBO";
+  }
+  return { type };
+}
+
+const GET_CONFIG = Symbol();
+
+function convertToInput(node, widget, config) {
+  console.log(node);
+  if (node.type == "LoadImage") {
+    var inputNode = LiteGraph.createNode("ComfyUIDeployExternalImage");
+    console.log(widget);
+
+    const currentOutputsLinks = node.outputs[0].links;
+
+    // const index = node.inputs.findIndex((x) => x.name == widget.name);
+    // console.log(node.widgets_values, index);
+    // inputNode.configure({
+    //   widgets_values: ["input_text", widget.value],
+    // });
+    inputNode.pos = node.pos;
+    inputNode.id = ++app.graph.last_node_id;
+    // inputNode.pos[0] += node.size[0] + 40;
+    node.pos[0] -= inputNode.size[0] + 20;
+    console.log(inputNode);
+    console.log(app.graph);
+    app.graph.add(inputNode);
+
+    const links = app.graph.links;
+
+    console.log(currentOutputsLinks);
+
+    for (let i = 0; i < currentOutputsLinks.length; i++) {
+      const link = currentOutputsLinks[i];
+      const llink = links[link];
+      console.log(links[link]);
+      setTimeout(
+        () => inputNode.connect(0, llink.target_id, llink.target_slot),
+        100,
+      );
+    }
+
+    node.connect(0, inputNode, 0);
+
+    return null;
+  }
+
+  hideWidget(node, widget);
+  const { type } = getWidgetType(config);
+  const sz = node.size;
+  const inputIsOptional = !!widget.options?.inputIsOptional;
+  const input = node.addInput(widget.name, type, {
+    widget: { name: widget.name, [GET_CONFIG]: () => config },
+    ...(inputIsOptional ? { shape: LiteGraph.SlotShape.HollowCircle } : {}),
+  });
+  for (const widget2 of node.widgets) {
+    widget2.last_y += LiteGraph.NODE_SLOT_HEIGHT;
+  }
+  node.setSize([Math.max(sz[0], node.size[0]), Math.max(sz[1], node.size[1])]);
+
+  if (type == "STRING") {
+    var inputNode = LiteGraph.createNode("ComfyUIDeployExternalText");
+    console.log(widget);
+    const index = node.inputs.findIndex((x) => x.name == widget.name);
+    console.log(node.widgets_values, index);
+    inputNode.configure({
+      widgets_values: ["input_text", widget.value],
+    });
+    inputNode.id = ++app.graph.last_node_id;
+    inputNode.pos = node.pos;
+    inputNode.pos[0] -= node.size[0] + 40;
+    console.log(inputNode);
+    console.log(app.graph);
+    app.graph.add(inputNode);
+    inputNode.connect(0, node, index);
+  }
+
+  return input;
+}
+
+const CONVERTED_TYPE = "converted-widget";
+
+function getConfig(widgetName) {
+  const { nodeData } = this.constructor;
+  return (
+    nodeData?.input?.required?.[widgetName] ??
+    nodeData?.input?.optional?.[widgetName]
+  );
+}
+
+function isConvertibleWidget(widget, config) {
+  return (
+    (VALID_TYPES.includes(widget.type) || VALID_TYPES.includes(config[0])) &&
+    !widget.options?.forceInput
+  );
+}
+
+var __defProp = Object.defineProperty;
+var __name = (target, value) =>
+  __defProp(target, "name", { value, configurable: true });
+
 /** @typedef {import('../../../web/types/comfy.js').ComfyExtension} ComfyExtension*/
 /** @type {ComfyExtension} */
 const ext = {
@@ -230,6 +403,118 @@ const ext = {
           );
         });
     }
+  },
+
+  async beforeRegisterNodeDef(nodeType, nodeData, app2) {
+    const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
+    nodeType.prototype.getExtraMenuOptions = function (_, options) {
+      const r = origGetExtraMenuOptions
+        ? origGetExtraMenuOptions.apply(this, arguments)
+        : void 0;
+      if (this.widgets) {
+        let toInput = [];
+        let toWidget = [];
+        for (const w of this.widgets) {
+          if (w.options?.forceInput) {
+            continue;
+          }
+          if (w.type === CONVERTED_TYPE) {
+            toWidget.push({
+              content: `Convert ${w.name} to widget`,
+              callback: /* @__PURE__ */ __name(
+                () => convertToWidget(this, w),
+                "callback",
+              ),
+            });
+          } else {
+            const config = getConfig.call(this, w.name) ?? [
+              w.type,
+              w.options || {},
+            ];
+            if (isConvertibleWidget(w, config)) {
+              toInput.push({
+                content: `Convert ${w.name} to external input`,
+                callback: /* @__PURE__ */ __name(
+                  () => convertToInput(this, w, config),
+                  "callback",
+                ),
+                className: "comfydeploy-menu-item",
+              });
+            }
+          }
+        }
+        if (toInput.length) {
+          if (true) {
+            options.push();
+
+            let optionIndex = options.findIndex((o) => o.content === "Outputs");
+            if (optionIndex === -1) optionIndex = options.length;
+            else optionIndex++;
+            options.splice(
+              0,
+              0,
+              // {
+              //   content: "[ComfyDeploy] Convert to External Input",
+              //   submenu: {
+              //     options: toInput,
+              //   },
+              //   className: "comfydeploy-menu-item"
+              // },
+              ...toInput,
+              null,
+            );
+          } else {
+            options.push(...toInput, null);
+          }
+        }
+        // if (toWidget.length) {
+        //   if (useConversionSubmenusSetting.value) {
+        //     options.push({
+        //       content: "Convert Input to Widget",
+        //       submenu: {
+        //         options: toWidget,
+        //       },
+        //     });
+        //   } else {
+        //     options.push(...toWidget, null);
+        //   }
+        // }
+      }
+      return r;
+    };
+
+    // const origonNodeCreated = nodeType.prototype.onNodeCreated;
+    // nodeType.prototype.onNodeCreated = function () {
+    //   const r = origonNodeCreated
+    //     ? origonNodeCreated.apply(this, arguments)
+    //     : void 0;
+
+    //   if (!this.widgets) {
+    //     return;
+    //   }
+
+    //   console.log(this.widgets);
+
+    //   this.widgets.forEach(element => {
+    //     if (element.type != "customtext") return
+
+    //     console.log(element.element);
+
+    //     const parent = element.element.parentElement
+
+    //     console.log(element.element.parentElement)
+    //     const btn = document.createElement("button");
+    //     // const div = document.createElement("div");
+    //     // parent.removeChild(element.element)
+    //     // div.appendChild(element.element)
+    //     // parent.appendChild(div)
+    //     // element.element = div
+    //     // console.log(element.element);
+    //     // btn.style = element.element.style
+    //   });
+
+    //   return r
+    // };
   },
 
   registerCustomNodes() {
@@ -463,11 +748,11 @@ const ext = {
         await app.ui.settings.setSettingValueAsync("Comfy.UseNewMenu", "Top");
         await app.ui.settings.setSettingValueAsync(
           "Comfy.Sidebar.Size",
-          "small"
+          "small",
         );
         await app.ui.settings.setSettingValueAsync(
           "Comfy.Sidebar.Location",
-          "right"
+          "right",
         );
         localStorage.setItem("Comfy.MenuPosition.Docked", "true");
         console.log("native mode manmanman");
