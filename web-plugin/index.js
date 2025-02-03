@@ -1,8 +1,11 @@
-import { app } from "./app.js";
-import { api } from "./api.js";
-import { ComfyWidgets, LGraphNode } from "./widgets.js";
+import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
+// import { LGraphNode } from "../../scripts/widgets.js";
+LGraphNode = LiteGraph.LGraphNode;
+import { ComfyDialog, $el } from "../../scripts/ui.js";
+
 import { generateDependencyGraph } from "https://esm.sh/comfyui-json@0.1.25";
-import { ComfyDeploy } from "https://esm.sh/comfydeploy@0.0.19-beta.30";
+import { ComfyDeploy } from "https://esm.sh/comfydeploy@2.0.0-beta.69";
 
 const styles = `
 .comfydeploy-menu-item {
@@ -45,6 +48,14 @@ function sendEventToCD(event, data) {
     data: data,
   };
   window.parent.postMessage(JSON.stringify(message), "*");
+}
+
+function sendDirectEventToCD(event, data) {
+  const message = {
+    type: event,
+    data: data,
+  };
+  window.parent.postMessage(message, "*");
 }
 
 function dispatchAPIEventData(data) {
@@ -483,6 +494,13 @@ const ext = {
       return r;
     };
 
+    if (
+      nodeData?.input?.optional?.default_value_url?.[1]?.image_preview === true
+    ) {
+      nodeData.input.optional.default_value_url = ["IMAGEPREVIEW"];
+      console.log(nodeData.input.optional.default_value_url);
+    }
+
     // const origonNodeCreated = nodeType.prototype.onNodeCreated;
     // nodeType.prototype.onNodeCreated = function () {
     //   const r = origonNodeCreated
@@ -609,6 +627,78 @@ const ext = {
     ComfyDeploy.category = "deploy";
   },
 
+  getCustomWidgets() {
+    return {
+      IMAGEPREVIEW(node, inputName, inputData) {
+        // Find or create the URL input widget
+        const urlWidget = node.addWidget(
+          "string",
+          inputName,
+          /* value=*/ "",
+          () => {},
+          { serialize: true },
+        );
+
+        const buttonWidget = node.addWidget(
+          "button",
+          "Open Assets Browser",
+          /* value=*/ "",
+          () => {
+            sendEventToCD("assets", {
+              node: node.id,
+              inputName: inputName,
+            });
+            // console.log("load image");
+          },
+          { serialize: false },
+        );
+
+        console.log(node.widgets);
+
+        console.log("urlWidget", urlWidget);
+
+        // Add image preview functionality
+        function showImage(url) {
+          const img = new Image();
+          img.onload = () => {
+            node.imgs = [img];
+            app.graph.setDirtyCanvas(true);
+            node.setSizeForImage?.();
+          };
+          img.onerror = () => {
+            node.imgs = [];
+            app.graph.setDirtyCanvas(true);
+          };
+          img.src = url;
+        }
+
+        // Set up URL widget value handling
+        let default_value = urlWidget.value;
+        Object.defineProperty(urlWidget, "value", {
+          set: function (value) {
+            this._real_value = value;
+            // Preview image when URL changes
+            if (value) {
+              showImage(value);
+            }
+          },
+          get: function () {
+            return this._real_value || default_value;
+          },
+        });
+
+        // Show initial image if URL exists
+        requestAnimationFrame(() => {
+          if (urlWidget.value) {
+            showImage(urlWidget.value);
+          }
+        });
+
+        return { widget: urlWidget };
+      },
+    };
+  },
+
   async setup() {
     // const graphCanvas = document.getElementById("graph-canvas");
 
@@ -650,11 +740,35 @@ const ext = {
             console.warn("api.handlePromptGenerated is not a function");
           }
           sendEventToCD("cd_plugin_onQueuePrompt", prompt);
+        } else if (message.type === "configure_queue_buttons") {
+          addQueueButtons(message.data);
+        } else if (message.type === "configure_menu_right_buttons") {
+          addMenuRightButtons(message.data);
+        } else if (message.type === "configure_menu_buttons") {
+          addMenuButtons(message.data);
         } else if (message.type === "get_prompt") {
           const prompt = await app.graphToPrompt();
           sendEventToCD("cd_plugin_onGetPrompt", prompt);
         } else if (message.type === "event") {
           dispatchAPIEventData(message.data);
+        } else if (message.type === "update_widget") {
+          // New handler for updating widget values
+          const { nodeId, widgetName, value } = message.data;
+          const node = app.graph.getNodeById(nodeId);
+
+          if (!node) {
+            console.warn(`Node with ID ${nodeId} not found`);
+            return;
+          }
+
+          const widget = node.widgets?.find((w) => w.name === widgetName);
+          if (!widget) {
+            console.warn(`Widget ${widgetName} not found in node ${nodeId}`);
+            return;
+          }
+
+          widget.value = value;
+          app.graph.setDirtyCanvas(true);
         } else if (message.type === "add_node") {
           console.log("add node", message.data);
           app.graph.beforeChange();
@@ -752,9 +866,9 @@ const ext = {
         );
         await app.ui.settings.setSettingValueAsync(
           "Comfy.Sidebar.Location",
-          "right",
+          "left",
         );
-        localStorage.setItem("Comfy.MenuPosition.Docked", "true");
+        // localStorage.setItem("Comfy.MenuPosition.Docked", "true");
         console.log("native mode manmanman");
       } catch (error) {
         console.error("Error setting validation to false", error);
@@ -1287,8 +1401,6 @@ function addButton() {
 
 app.registerExtension(ext);
 
-import { ComfyDialog, $el } from "../../scripts/ui.js";
-
 export class InfoDialog extends ComfyDialog {
   constructor() {
     super();
@@ -1759,7 +1871,7 @@ app.extensionManager.registerSidebarTab({
       <div style="padding: 20px;">
         <h3>Comfy Deploy</h3>
         <div id="deploy-container" style="margin-bottom: 20px;"></div>
-        <div id="workflows-container">
+        <div id="workflows-container" style="display: none;">
           <h4>Your Workflows</h4>
           <div id="workflows-loading" style="display: flex; justify-content: center; align-items: center; height: 100px;">
             ${loadingIcon}
@@ -1859,7 +1971,7 @@ async function loadWorkflowApi(versionId) {
 
 const orginal_fetch_api = api.fetchApi;
 api.fetchApi = async (route, options) => {
-  console.log("Fetch API called with args:", route, options, ext.native_mode);
+  // console.log("Fetch API called with args:", route, options, ext.native_mode);
 
   if (route.startsWith("/prompt") && ext.native_mode) {
     const info = await getSelectedWorkflowInfo();
@@ -1891,3 +2003,306 @@ api.fetchApi = async (route, options) => {
 
   return await orginal_fetch_api.call(api, route, options);
 };
+
+// Intercept window drag and drop events
+const originalDropHandler = document.ondrop;
+document.ondrop = async (e) => {
+  console.log("Drop event intercepted:", e);
+
+  // Prevent default browser behavior
+  e.preventDefault();
+
+  // Handle files if present
+  if (e.dataTransfer?.files?.length > 0) {
+    const files = Array.from(e.dataTransfer.files);
+
+    // Send file data to parent directly as JSON
+    sendDirectEventToCD("file_drop", {
+      files: files,
+      x: e.clientX,
+      y: e.clientY,
+      timestamp: Date.now(),
+    });
+  }
+
+  // Call original handler if exists
+  if (originalDropHandler) {
+    originalDropHandler(e);
+  }
+};
+
+const originalDragEnterHandler = document.ondragenter;
+document.ondragenter = (e) => {
+  // Prevent default to allow drop
+  e.preventDefault();
+
+  // Send dragenter event to parent directly as JSON
+  sendDirectEventToCD("file_dragenter", {
+    x: e.clientX,
+    y: e.clientY,
+    timestamp: Date.now(),
+  });
+
+  if (originalDragEnterHandler) {
+    originalDragEnterHandler(e);
+  }
+};
+
+const originalDragLeaveHandler = document.ondragleave;
+document.ondragleave = (e) => {
+  // Prevent default to allow drop
+  e.preventDefault();
+
+  // Send dragleave event to parent directly as JSON
+  sendDirectEventToCD("file_dragleave", {
+    x: e.clientX,
+    y: e.clientY,
+    timestamp: Date.now(),
+  });
+
+  if (originalDragLeaveHandler) {
+    originalDragLeaveHandler(e);
+  }
+};
+
+const originalDragOverHandler = document.ondragover;
+document.ondragover = (e) => {
+  // Prevent default to allow drop
+  e.preventDefault();
+
+  // Send dragover event to parent directly as JSON
+  sendDirectEventToCD("file_dragover", {
+    x: e.clientX,
+    y: e.clientY,
+    timestamp: Date.now(),
+  });
+
+  if (originalDragOverHandler) {
+    originalDragOverHandler(e);
+  }
+};
+
+// Function to create a single button
+function createQueueButton(config) {
+  const button = document.createElement("button");
+  button.id = `cd-button-${config.id}`;
+  button.className =
+    "p-button p-component p-button-icon-only p-button-secondary p-button-text";
+  button.innerHTML = `
+    <span class="p-button-icon pi ${config.icon}"></span>
+    <span class="p-button-label">&nbsp;</span>
+  `;
+  button.onclick = () => {
+    const eventData =
+      typeof config.eventData === "function"
+        ? config.eventData()
+        : config.eventData || {};
+    sendEventToCD(config.event, eventData);
+  };
+  button.setAttribute("data-pd-tooltip", config.tooltip);
+  return button;
+}
+
+// Function to add buttons to queue group
+function addQueueButtons(buttonConfigs = DEFAULT_BUTTONS) {
+  const queueButtonGroup = document.querySelector(".queue-button-group.flex");
+  if (!queueButtonGroup) return;
+
+  // Remove any existing CD buttons
+  const existingButtons =
+    queueButtonGroup.querySelectorAll('[id^="cd-button-"]');
+  existingButtons.forEach((button) => button.remove());
+
+  // Add new buttons
+  buttonConfigs.forEach((config) => {
+    const button = createQueueButton(config);
+    queueButtonGroup.appendChild(button);
+  });
+}
+
+// addMenuRightButtons([
+//   {
+//     id: "cd-button-save-image",
+//     icon: "pi-save",
+//     label: "Snapshot",
+//     tooltip: "Save the current image to your output directory.",
+//     event: "save_image",
+//     eventData: () => ({}),
+//   },
+// ]);
+
+// addMenuLeftButtons([
+//   {
+//     id: "cd-button-back",
+//     icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+//       <path d="M15 18L9 12L15 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+//     </svg>`,
+//     tooltip: "Go back to the previous page.",
+//     event: "back",
+//     eventData: () => ({}),
+//   },
+// ]);
+
+// addMenuButtons({
+//   containerSelector: "body > div.comfyui-body-top > div",
+//   buttonConfigs: [
+//     {
+//       id: "cd-button-workflow-1",
+//       icon: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16 3l4 4l-4 4m-6-4h10M8 13l-4 4l4 4m-4-4h9"/></svg>`,
+//       label: "Workflow",
+//       tooltip: "Go to Workflow 1",
+//       event: "workflow_1",
+//       // btnClasses: "",
+//       eventData: () => ({}),
+//     },
+//     {
+//       id: "cd-button-workflow-3",
+//       // icon: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16 3l4 4l-4 4m-6-4h10M8 13l-4 4l4 4m-4-4h9"/></svg>`,
+//       label: "v1",
+//       tooltip: "Go to Workflow 1",
+//       event: "workflow_1",
+//       // btnClasses: "",
+//       eventData: () => ({}),
+//     },
+//     {
+//       id: "cd-button-workflow-2",
+//       icon: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 3v6"/><circle cx="12" cy="12" r="3"/><path d="M12 15v6"/></g></svg>`,
+//       label: "Commit",
+//       tooltip: "Commit the current workflow",
+//       event: "commit",
+//       style: {
+//         backgroundColor: "oklch(.476 .114 61.907)",
+//       },
+//       eventData: () => ({}),
+//     },
+//   ],
+//   buttonIdPrefix: "cd-button-workflow-",
+//   insertBefore:
+//     "body > div.comfyui-body-top > div > div.flex-grow.min-w-0.app-drag.h-full",
+//   // containerStyle: { order: "3" }
+// });
+
+// addMenuButtons({
+//   containerSelector:
+//     "body > div.comfyui-body-top > div > div.flex-grow.min-w-0.app-drag.h-full",
+//   clearContainer: true,
+//   buttonConfigs: [],
+//   buttonIdPrefix: "cd-button-p-",
+//   containerStyle: { order: "-1" },
+// });
+
+// Function to add buttons to a menu container
+function addMenuButtons(options) {
+  const {
+    containerSelector,
+    buttonConfigs,
+    buttonIdPrefix = "cd-button-",
+    containerClass = "comfyui-button-group",
+    containerStyle = {},
+    clearContainer = false,
+    insertBefore = null, // New option to specify selector for insertion point
+  } = options;
+
+  const menuContainer = document.querySelector(containerSelector);
+
+  if (!menuContainer) return;
+
+  // Remove any existing CD buttons
+  const existingButtons = document.querySelectorAll(
+    `[id^="${buttonIdPrefix}"]`,
+  );
+  existingButtons.forEach((button) => button.remove());
+
+  const container = document.createElement("div");
+  container.className = containerClass;
+
+  // Apply container styles
+  Object.assign(container.style, containerStyle);
+
+  // Clear existing content if specified
+  if (clearContainer) {
+    menuContainer.innerHTML = "";
+  }
+
+  // Create and add buttons
+  buttonConfigs.forEach((config) => {
+    const button = createMenuButton({
+      ...config,
+      idPrefix: buttonIdPrefix,
+    });
+    container.appendChild(button);
+  });
+
+  // Insert before specified element if provided, otherwise append
+  if (insertBefore) {
+    const targetElement = menuContainer.querySelector(insertBefore);
+    if (targetElement) {
+      menuContainer.insertBefore(container, targetElement);
+    } else {
+      menuContainer.appendChild(container);
+    }
+  } else {
+    menuContainer.appendChild(container);
+  }
+}
+
+function createMenuButton(config) {
+  const {
+    id,
+    icon,
+    label,
+    btnClasses = "",
+    tooltip,
+    event,
+    eventData,
+    idPrefix,
+    style = {},
+  } = config;
+
+  const button = document.createElement("button");
+  button.id = `${idPrefix}${id}`;
+  button.className = `comfyui-button ${btnClasses}`;
+  Object.assign(button.style, style);
+
+  // Only add icon if provided
+  const iconHtml = icon
+    ? icon.startsWith("<svg")
+      ? icon
+      : `<span class="p-button-icon pi ${icon}"></span>`
+    : "";
+
+  button.innerHTML = `
+    ${iconHtml}
+    ${label ? `<span class="p-button-label text-sm">${label}</span>` : ""}
+  `;
+
+  button.onclick = () => {
+    const data =
+      typeof eventData === "function" ? eventData() : eventData || {};
+    sendEventToCD(event, data);
+  };
+
+  if (tooltip) {
+    button.setAttribute("data-pd-tooltip", tooltip);
+  }
+  return button;
+}
+
+// Refactored menu button functions
+function addMenuLeftButtons(buttonConfigs) {
+  addMenuButtons({
+    containerSelector: "body > div.comfyui-body-top > div",
+    buttonConfigs,
+    buttonIdPrefix: "cd-button-left-",
+    containerStyle: { order: "-1" },
+  });
+}
+
+function addMenuRightButtons(buttonConfigs) {
+  addMenuButtons({
+    containerSelector: ".comfyui-menu-right .flex",
+    buttonConfigs,
+    buttonIdPrefix: "cd-button-",
+    containerStyle: {},
+  });
+}
